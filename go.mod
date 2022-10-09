@@ -10,10 +10,12 @@ require (
 	github.com/cockroachdb/cockroach-go/v2 v2.2.16
 	github.com/disgoorg/snowflake/v2 v2.0.0
 	github.com/go-playground/validator/v10 v10.11.1
+	github.com/google/uuid v1.3.0
 	github.com/jackc/pgconn v1.13.0
 	github.com/jackc/pgtype v1.12.0
 	github.com/jackc/pgx/v4 v4.17.2
 	github.com/labstack/echo/v4 v4.9.0
+	github.com/marcboeker/go-duckdb v1.0.0
 	github.com/matoous/go-nanoid/v2 v2.0.0
 	github.com/rs/zerolog v1.28.0
 	github.com/segmentio/ksuid v1.0.4
@@ -34,7 +36,6 @@ require (
 	github.com/jackc/puddle v1.3.0 // indirect
 	github.com/labstack/gommon v0.3.1 // indirect
 	github.com/leodido/go-urn v1.2.1 // indirect
-	github.com/marcboeker/go-duckdb v1.0.0 // indirect
 	github.com/mattn/go-colorable v0.1.12 // indirect
 	github.com/mattn/go-isatty v0.0.14 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect

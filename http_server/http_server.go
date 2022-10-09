@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 	"golang.org/x/net/http2"
 
+	"github.com/danthegoodman1/click-heatmap-api/ddb"
 	"github.com/danthegoodman1/click-heatmap-api/gologger"
 	"github.com/danthegoodman1/click-heatmap-api/utils"
 )
@@ -52,11 +53,13 @@ func StartHTTPServer() *HTTPServer {
 	}
 
 	s.Echo.Use(middleware.LoggerWithConfig(logConfig))
+	s.Echo.Use(CreateReqContext)
 	s.Echo.Use(middleware.CORS())
 	s.Echo.Validator = &CustomValidator{validator: validator.New()}
 
 	// technical - no auth
 	s.Echo.GET("/hc", s.HealthCheck)
+	s.Echo.GET("/sql", ccHandler(s.GetSQL))
 
 	s.Echo.Listener = listener
 	go func() {
@@ -96,4 +99,21 @@ func (*HTTPServer) HealthCheck(c echo.Context) error {
 func (s *HTTPServer) Shutdown(ctx context.Context) error {
 	err := s.Echo.Shutdown(ctx)
 	return err
+}
+
+func (*HTTPServer) GetSQL(c *CustomContext) error {
+	rows, err := ddb.DuckDB.Query(`SELECT 1::INT8 as a, 2 ::INT8 as b`)
+	if err != nil {
+		return c.InternalError(err, "error selecting from duckdb")
+	}
+
+	var a, b int64
+	for rows.Next() {
+		err = rows.Scan(&a, &b)
+		if err != nil {
+			return c.InternalError(err, "error scanning rows")
+		}
+	}
+
+	return c.String(200, fmt.Sprintf("a: %d, b: %d", a, b))
 }
