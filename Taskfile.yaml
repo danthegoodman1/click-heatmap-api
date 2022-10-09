@@ -1,0 +1,214 @@
+version: '3'
+
+dotenv: ['.env']
+
+vars:
+  sql_migrate_version: v1.1.1
+  sql_c_version: v1.15.0
+
+  REPOSITORY: 110817126566.dkr.ecr.us-east-1.amazonaws.com/tangia-be
+  NAMESPACE: tangia
+  DEPLOYMENT: tangia-be
+  CONTAINER: tangia-be
+
+env:
+  DOCKER_BUILDKIT: "1"
+
+tasks:
+
+  install-deps:
+    cmds:
+    - go install github.com/rubenv/sql-migrate/sql-migrate@{{.sql_migrate_version}}
+    - go install github.com/kyleconroy/sqlc/cmd/sqlc@{{.sql_c_version}}
+
+  sql-up:
+    preconditions:
+      - msg: set env CRDB_DSN and SQL_ENV to local,staging,prod,development
+        sh: echo $SQL_ENV | grep .
+    cmds:
+    - sql-migrate up --env=$SQL_ENV
+    - task: sql-status
+
+  sql-down:
+    preconditions:
+      - msg: set env CRDB_DSN and SQL_ENV to local,staging,prod,development
+        sh: echo $SQL_ENV | grep .
+    cmds:
+    - sql-migrate down --env=$SQL_ENV
+    - task: sql-status
+
+  sql-status:
+    preconditions:
+      - msg: set env CRDB_DSN and SQL_ENV to local,staging,prod,development
+        sh: echo $SQL_ENV | grep .
+    cmds:
+    - sql-migrate status --env=$SQL_ENV
+
+  sql-gen:
+    desc: generate typed methods for SQL execution
+    silent: true
+    cmds:
+      # concatenates all migrations but drops the "migrate down" parts
+      - ls migrations/*.sql | xargs -n1 sed '/^-- +migrate Down/ ,$d' > schema.sql
+      # There are a bunch of SQL features that don't matter for SQLC but break their parser
+      - sed -i -e 's/ON UPDATE NOW[(][)]//g' schema.sql
+      - sed -i -e 's/CREATE DATABASE.*//g' schema.sql
+      - sed -i -e 's/CREATE INDEX.*//g' schema.sql
+      - sed -i -e 's/CREATE USER.*//g' schema.sql
+      - sed -i -e 's/GRANT.*//g' schema.sql
+      - sed -i -e 's/DESC//g' schema.sql
+      - sed -i -e 's/USING HASH.*//g' schema.sql
+      - rm -f query/*.sql.go
+      - sqlc generate
+      - rm schema.sql*
+      - echo done
+
+  default:
+    cmds:
+      - go run .
+
+  test:
+    desc: run tests
+    deps:
+      # integration tests use that image
+      - task: docker-build
+        vars:
+          buildArgs: '--build-arg GO_ARGS="-tags fake_auth"'
+    cmds:
+      - PRETTY=1 DEBUG=1 go test -count=1 -v ./integration_tests
+
+  run-local:
+    env:
+      TZ: '' # force UTC
+      CLERK_API_KEY: test_UWBpgmyNvEXZ67046ltAvVQHFRnGjCAUA9
+      HTTP_PORT: '8080'
+      SHUTDOWN_SLEEP_SEC: '2'
+      LONG_POLL_TIMEOUT: 5.4s
+      PRETTY: '1'
+      DEBUG: '1'
+      GUBERNATOR_ADDRESS: 'off'
+      CRDB_DSN: postgresql://tangia_be:tangia_be@127.0.0.1:26257/defaultdb?sslmode=disable
+    cmds:
+      - docker-compose up -d
+      - sleep 2
+      - SQL_ENV=local task sql-up
+      - go run -tags fake_auth .
+      # - go run .
+
+  single-test:
+    cmds:
+      - go test --count=1 -v ./... -run {{.CLI_ARGS}}
+      # task single-test -- TestName
+
+  docker-login:
+    desc: update your ECR login
+    cmds:
+      - aws ecr get-login-password --region us-east-1 --profile prod | docker login --username AWS --password-stdin 110817126566.dkr.ecr.us-east-1.amazonaws.com
+
+  docker-build:
+    vars:
+      gitBuildArg:
+        sh: if [ -z "$GIT_INSTEAD_OF" ]; then echo -n "" ; else echo -n "--build-arg GIT_INSTEAD_OF=$GIT_INSTEAD_OF" ; fi
+    cmds:
+      - docker build -t ua-{{.DEPLOYMENT}}:local {{.gitBuildArg}} {{.buildArgs}} --ssh default --platform=linux/amd64 .
+
+  deploy-prod:
+    desc: build, push and apply manifests on prod
+    cmds:
+    - task: deploy
+      vars:
+        ctx: ua-prod
+  deploy-staging:
+    desc: build, push and apply manifests on staging
+    cmds:
+    - task: deploy
+      vars:
+        ctx: ua-staging
+  deploy:
+    deps:
+      - docker-build
+    vars:
+      tag:
+        sh: echo "$(git rev-parse --short HEAD)-$(date -u '+%Y.%m.%d-%H.%M.%S')"
+    cmds:
+    - git diff-index --quiet HEAD -- || (echo "uncommitted changes!" ; exit 1)
+    - test -z "$(git log --oneline @{u}..)" || (echo "unpushed commits!" ; exit 1)
+    - docker tag ua-{{.DEPLOYMENT}}:local {{.REPOSITORY}}:{{.tag}}
+    - docker push {{.REPOSITORY}}:{{.tag}}
+    - task: k8s
+      vars:
+        ctx: '{{.ctx}}'
+        tag: '{{.tag}}'
+        cmd: apply
+    - kubectl --context "{{.ctx}}" -n {{.NAMESPACE}} rollout status deploy {{.DEPLOYMENT}}
+
+  create-deploy-kustomize:
+    silent: true
+    cmds:
+      - mkdir -p deploy/{{.ctx}}
+      - |
+        echo '
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          metadata:
+            name: {{.ctx}}-deployment
+          resources:
+          - ../../k8s/{{.ctx}}
+          images:
+          - name: replaceme.ultimatearcade.io/image
+            newName: {{.REPOSITORY}}
+            newTag: '{{.tag}}'
+        ' > deploy/{{.ctx}}/kustomization.yml
+
+  k8s-diff-prod:
+    desc: kubectl diff prod
+    cmds:
+    - task: k8s
+      vars:
+        ctx: ua-prod
+        cmd: diff
+  k8s-diff-staging:
+    desc: kubectl diff staging
+    cmds:
+    - task: k8s
+      vars:
+        ctx: ua-staging
+        cmd: diff
+  k8s-apply-prod:
+    desc: kubectl apply prod
+    cmds:
+    - task: k8s
+      vars:
+        ctx: ua-prod
+        cmd: apply
+  k8s-apply-staging:
+    desc: kubectl apply staging
+    cmds:
+    - task: k8s
+      vars:
+        ctx: ua-staging
+        cmd: apply
+  k8s-promote-staging:
+    desc: kubectl apply prod
+    cmds:
+    - task: k8s
+      vars:
+        tag:
+          # gets tag currently set in staging deployment
+          sh: kubectl --context ua-staging -n {{.NAMESPACE}} get deploy {{.DEPLOYMENT}} -o json | jq -j '.spec.template.spec.containers[] | select(.name == "{{.CONTAINER}}") | .image' | sed 's/.*://'
+        ctx: ua-prod
+        cmd: apply
+    - kubectl --context "ua-prod" -n {{.NAMESPACE}} rollout status deploy {{.DEPLOYMENT}}
+  k8s:
+    silent: true
+    vars:
+      current_tag:
+        # gets tag currently set in deployment
+        sh: kubectl --context {{.ctx}} -n {{.NAMESPACE}} get deploy {{.DEPLOYMENT}} -o json | jq -j '.spec.template.spec.containers[] | select(.name == "{{.CONTAINER}}") | .image' | sed 's/.*://'
+    cmds:
+    - echo "last deployed tag was '{{.current_tag}}' now we're applying '{{.tag | default .current_tag}}'"
+    - task: create-deploy-kustomize
+      vars:
+        ctx: '{{.ctx}}'
+        tag: '{{.tag | default .current_tag}}'
+    - kubectl --context "{{.ctx}}" {{.cmd}} -k deploy/{{.ctx}}
