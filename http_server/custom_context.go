@@ -15,21 +15,21 @@ type CustomContext struct {
 	echo.Context
 	RequestID string
 	UserID    string
-	logger    zerolog.Logger
 }
 
 func CreateReqContext(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		reqID := uuid.NewString()
-		logger := logger.With().Str("reqID", reqID).Logger()
 		ctx := context.WithValue(c.Request().Context(), gologger.ReqIDKey, reqID)
 		ctx = logger.WithContext(ctx)
 		c.SetRequest(c.Request().WithContext(ctx))
+		logger := zerolog.Ctx(ctx)
+		logger.UpdateContext(func(c zerolog.Context) zerolog.Context {
+			return c.Str("reqID", reqID)
+		})
 		cc := &CustomContext{
 			Context:   c,
 			RequestID: reqID,
-			// TODO remove and replace with zerolog.Ctx()
-			logger: logger,
 		}
 		return next(cc)
 	}
@@ -49,15 +49,15 @@ func (c *CustomContext) internalErrorMessage() string {
 
 func (c *CustomContext) InternalError(err error, msg string) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		c.logger.Warn().CallerSkipFrame(1).Msg(err.Error())
+		zerolog.Ctx(c.Request().Context()).Warn().CallerSkipFrame(1).Msg(err.Error())
 	} else {
-		c.logger.Error().CallerSkipFrame(1).Err(err).Msg(msg)
+		zerolog.Ctx(c.Request().Context()).Error().CallerSkipFrame(1).Err(err).Msg(msg)
 	}
 	return c.String(http.StatusInternalServerError, c.internalErrorMessage())
 }
 
 // Sets the user property, and updates the logger
-func (c *CustomContext) SetUser(userID string) {
-	c.UserID = userID
-	c.logger = c.logger.With().Str("userID", userID).Logger()
-}
+// func (c *CustomContext) SetUser(userID string) {
+// 	c.UserID = userID
+// 	c.logger = c.logger.With().Str("userID", userID).Logger()
+// }

@@ -7,10 +7,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/rs/zerolog"
 	"golang.org/x/net/http2"
 
 	"github.com/danthegoodman1/click-heatmap-api/ddb"
@@ -40,26 +42,15 @@ func StartHTTPServer() *HTTPServer {
 	s.Echo.HideBanner = true
 	s.Echo.HidePort = true
 	s.Echo.JSONSerializer = &utils.NoEscapeJSONSerializer{}
-	logConfig := middleware.LoggerConfig{
-		Skipper: func(c echo.Context) bool {
-			return c.Path() == "/hc"
-		},
-		Format: `{"time":"${time_rfc3339_nano}","id":"${id}","remote_ip":"${remote_ip}",` +
-			`"host":"${host}","method":"${method}","uri":"${uri}","user_agent":"${user_agent}",` +
-			`"status":${status},"error":"${error}","latency":${latency},"latency_human":"${latency_human}"` +
-			`,"bytes_in":${bytes_in},"bytes_out":${bytes_out},"proto":"${protocol}"}` + "\n",
-		CustomTimeFormat: "2006-01-02 15:04:05.00000",
-		Output:           os.Stdout, // logger or os.Stdout
-	}
 
-	s.Echo.Use(middleware.LoggerWithConfig(logConfig))
 	s.Echo.Use(CreateReqContext)
+	s.Echo.Use(LoggerMiddleware)
 	s.Echo.Use(middleware.CORS())
 	s.Echo.Validator = &CustomValidator{validator: validator.New()}
 
 	// technical - no auth
 	s.Echo.GET("/hc", s.HealthCheck)
-	s.Echo.GET("/sql", ccHandler(s.GetSQL))
+	s.Echo.GET("/sql/:thing", ccHandler(s.GetSQL))
 
 	s.Echo.Listener = listener
 	go func() {
@@ -101,7 +92,36 @@ func (s *HTTPServer) Shutdown(ctx context.Context) error {
 	return err
 }
 
+func LoggerMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		start := time.Now()
+		if err := next(c); err != nil {
+			// default handler
+			c.Error(err)
+		}
+		stop := time.Since(start)
+		// Log otherwise
+		logger := zerolog.Ctx(c.Request().Context())
+		req := c.Request()
+		res := c.Response()
+
+		p := req.URL.Path
+		if p == "" {
+			p = "/"
+		}
+
+		cl := req.Header.Get(echo.HeaderContentLength)
+		if cl == "" {
+			cl = "0"
+		}
+		logger.Debug().Str("method", req.Method).Str("remote_ip", c.RealIP()).Str("req_uri", req.RequestURI).Str("handler_path", c.Path()).Str("path", p).Int("status", res.Status).Int64("latency_ns", int64(stop)).Str("protocol", req.Proto).Str("bytes_in", cl).Int64("bytes_out", res.Size).Msg("req recived")
+		return nil
+	}
+}
+
 func (*HTTPServer) GetSQL(c *CustomContext) error {
+	logger := zerolog.Ctx(c.Request().Context())
+	logger.Debug().Msgf("This is scuffed")
 	rows, err := ddb.DuckDB.Query(`SELECT 1::INT8 as a, 2 ::INT8 as b`)
 	if err != nil {
 		return c.InternalError(err, "error selecting from duckdb")
