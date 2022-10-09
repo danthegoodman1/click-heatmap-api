@@ -12,7 +12,7 @@ var (
 )
 
 func ConnectDDB() (err error) {
-	DuckDB, err = sql.Open("duckdb", "")
+	DuckDB, err = sql.Open("duckdb", "./.ddb")
 	if err != nil {
 		return fmt.Errorf("error opening duckdb: %w", err)
 	}
